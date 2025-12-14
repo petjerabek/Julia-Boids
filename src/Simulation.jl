@@ -87,7 +87,8 @@ end
     return v
 end
 
-# === Kernel (pairwise interaction) ===
+# === KERNEL (PAIRWISE INTERACTION) ===
+
 function interact!(pos_i, pos_j, i, j, d2, out, flock_vel, params)
     d = sqrt(d2)
     
@@ -138,7 +139,8 @@ function interact!(pos_i, pos_j, i, j, d2, out, flock_vel, params)
     return out
 end
 
-# --- The Physics Loop ---
+# === PHYSICS LOOP ===
+
 function step!(sim::Simulation)
     cfg = sim.config
     flock = sim.flock

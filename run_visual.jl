@@ -27,7 +27,7 @@ function run_app()
     scatter!(ax, obs_points, 
         rotation = obs_rotations,
         marker = '➤', 
-        markersize = 6,
+        markersize = 3,
         color = :cyan
     )
     
