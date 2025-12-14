@@ -1,8 +1,23 @@
 using Boids
 using GLMakie
 
-function run_app()
-    cfg = SimConfig()
+function run_app(; n_boids::Int)
+    # get default config to read the perception radius
+    defaults = SimConfig()
+    TARGET_NEIGHBORS = 8.0 # desired average neighbors per boid
+
+    # scale world size to preserve constant density and O(N) complexity
+    # tagret area = (total boids * vision area) / target neighbors
+    vision_area = π * (defaults.perception^2)
+    required_area = (n_boids * vision_area) / TARGET_NEIGHBORS
+    side_len = sqrt(required_area)
+
+    # create simulation with scaled world size
+    cfg = SimConfig(
+        n_boids = n_boids,
+        width = side_len,
+        height = side_len
+    )
     sim = Simulation(cfg)
 
     # wrap simulation arrays in observables so Makie knows when to redraw
@@ -23,11 +38,15 @@ function run_app()
     )
     hidedecorations!(ax) # remove grid and numbers
 
+    # auto-scale marker size based on number of boids
+    marker_scale = 6.0 * sqrt(1500 / n_boids) 
+    marker_size = clamp(marker_scale, 2.5, 8.0)
+
     # fast scatter plot
     scatter!(ax, obs_points, 
         rotation = obs_rotations,
         marker = '➤', 
-        markersize = 3,
+        markersize = marker_size,
         color = :cyan
     )
     
@@ -78,9 +97,9 @@ function run_app()
             notify(obs_points)
             notify(obs_vels)
         end
-        
+
         sleep(1/60) # cap to ~60 FPS
     end
 end
 
-run_app()
+run_app(n_boids=10000)
