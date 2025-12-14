@@ -199,13 +199,13 @@ function step!(sim::Simulation)
         total_steer = steer_sep + steer_align + steer_coh
         acc = limit_magnitude(total_steer, cfg.max_force, cfg.eps)
         
-        # semi-implicit Euler integration (dt = 1)
-        new_vel = vel_i + acc
+        # semi-implicit Euler integration
+        new_vel = vel_i + (acc * cfg.dt)
         new_vel = limit_magnitude(new_vel, cfg.speed, cfg.eps)
         
         flock.vel[i] = new_vel
         
-        new_pos = pos_i + new_vel
+        new_pos = pos_i + (new_vel * cfg.dt)
         flock.pos[i] = SVector(mod(new_pos[1], cfg.width), mod(new_pos[2], cfg.height))
     end
 end

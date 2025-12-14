@@ -50,18 +50,36 @@ function run_app()
 
     display(fig)
 
+    # initialize timing
+    t_prev = time()
+    accumulator = 0.0
+
     # render loop, async --> window stays responsive
     @async while isopen(fig.scene)
+        t_now = time()
+        delta_time = t_now - t_prev
+        t_prev = t_now
+
+        # cap max simulation time per frame to prevent spiral of death
+        if delta_time > 0.25
+            delta_time = 0.25 
+        end
+
         if running[]
-            step!(sim)
+            accumulator += delta_time
+            
+            # consume accumulated time in fixed steps
+            while accumulator >= cfg.dt
+                step!(sim)
+                accumulator -= cfg.dt
+            end
             
             # notify Makie that data has changed
             notify(obs_points)
             notify(obs_vels)
         end
         
-        # target ~60 FPS
-        sleep(1/60)
+        sleep(1/60) # cap to ~60 FPS
     end
 end
 
