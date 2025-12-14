@@ -6,11 +6,12 @@ function run_benchmark(n_boids::Int)
     
     # get default config to read the perception radius
     defaults = SimConfig()
+    TARGET_NEIGHBORS = 8.0 # desired average neighbors per boid
     
-    # scale world size to achieve ~8 neighbors per boid to preserve constant density and O(N) complexity
+    # scale world size to preserve constant density and O(N) complexity
     # tagret area = (total boids * vision area) / target neighbors
     vision_area = π * (defaults.perception^2)
-    target_area = (n_boids * vision_area) / 8.0
+    target_area = (n_boids * vision_area) / TARGET_NEIGHBORS
     side_len = sqrt(target_area)
     
     # create simulation with scaled world size
