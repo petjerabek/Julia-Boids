@@ -44,6 +44,7 @@ mutable struct Simulation{T, B, C}
     box::B
     cell_list::C
     accumulators::Vector{Accumulator} # already a concrete type
+    vel_norms::Vector{Float64} # buffer to pre-calculate norms
 end
 
 # randomize boid positions and velocities
@@ -70,12 +71,21 @@ function Simulation(cfg::SimConfig)
     # standard vector of zeroed accumulators, heap-allocated
     acc = fill(ZERO_ACC, cfg.n_boids)
 
-    return Simulation(cfg, flock, box, cl, acc)
+    # allocate norm buffer
+    norms = zeros(Float64, cfg.n_boids)
+
+    return Simulation(cfg, flock, box, cl, acc, norms)
 end
 
 # API endpoint to randomize the simulation
 function randomize!(sim::Simulation)
     randomize_data!(sim.flock, sim.config)
+
+    @inbounds for i in 1:length(sim.flock)
+        sim.vel_norms[i] = norm(sim.flock.vel[i])
+    end
+
+    sim.cell_list = UpdateCellList!(sim.flock.pos, sim.box, sim.cell_list)
 end
 
 # no call overhead magnitude limiter with strict type consistency
@@ -89,29 +99,23 @@ end
 
 # === KERNEL (PAIRWISE INTERACTION) ===
 
-function interact!(pos_i, pos_j, i, j, d2, out, flock_vel, params)
+function interact!(pos_i, pos_j, i, j, d2, out, flock_vel, flock_norms, sep_sq, fov_thresh, eps)
     d = sqrt(d2)
     
-    # unpack parameters
-    sep_sq = params.separation_dist^2
-    fov_thresh = params.fov_thresh
-    eps = params.eps
-
-    # fetch velocities (CellListMap only manages positions)
-    vel_i = flock_vel[i]
-    vel_j = flock_vel[j]
+    # access pre-calculated norms (memory read is faster then sqrt instruction)
+    vel_norm_i = flock_norms[i]
+    vel_norm_j = flock_norms[j]
     
     # vector from i to j
     # pos_j is already relative, wrapped coordinate calculated by CellListMap
     offset_ij = pos_j - pos_i
     
     # --- check i -> j ---
-    vel_norm_i = norm(vel_i)
     if vel_norm_i > eps
-        cos_theta = dot(vel_i, offset_ij) / (vel_norm_i * d + eps)
+        cos_theta = dot(flock_vel[i], offset_ij) / (vel_norm_i * d + eps)
         if cos_theta >= fov_thresh # j is within i's FOV
             out[i] = out[i] + Accumulator(
-                vel_j,          
+                flock_vel[j],          
                 pos_i + offset_ij, # virtual position for cohesion center
                 (d2 < sep_sq) ? (-offset_ij / (d2 + eps)) : SVector(0.,0.), 
                 1,              
@@ -122,12 +126,11 @@ function interact!(pos_i, pos_j, i, j, d2, out, flock_vel, params)
 
     # --- check j -> i ---
     offset_ji = -offset_ij
-    vel_norm_j = norm(vel_j)
     if vel_norm_j > eps
-        cos_theta = dot(vel_j, offset_ji) / (vel_norm_j * d + eps)
+        cos_theta = dot(flock_vel[j], offset_ji) / (vel_norm_j * d + eps)
         if cos_theta >= fov_thresh # i is within j's FOV
             out[j] = out[j] + Accumulator(
-                vel_i,
+                flock_vel[i],
                 pos_j + offset_ji,
                 (d2 < sep_sq) ? (-offset_ji / (d2 + eps)) : SVector(0.,0.),
                 1,
@@ -150,16 +153,20 @@ function step!(sim::Simulation)
     
     # reset accumulators
     fill!(sim.accumulators, ZERO_ACC)
+
+    # pre-calculate velocity norms
+    @inbounds for i in 1:length(flock)
+        sim.vel_norms[i] = norm(flock.vel[i])
+    end
     
-    params = (
-        separation_dist = cfg.separation_dist,
-        fov_thresh = cos_half_fov(cfg),
-        eps = cfg.eps
-    )
+    sep_sq = cfg.separation_dist^2
+    fov = cos_half_fov(cfg)
+    eps = cfg.eps
     
     # run pairwise interactions in parallel using CellListMap
     map_pairwise!(
-        (pos_i, pos_j, i, j, d2, out) -> interact!(pos_i, pos_j, i, j, d2, out, flock.vel, params),
+        (pos_i, pos_j, i, j, d2, out) -> interact!(
+            pos_i, pos_j, i, j, d2, out, flock.vel, sim.vel_norms, sep_sq, fov, eps),
         sim.accumulators,
         sim.box,
         sim.cell_list,
