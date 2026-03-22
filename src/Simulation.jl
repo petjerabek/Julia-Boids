@@ -2,7 +2,7 @@ using StructArrays
 using LinearAlgebra
 using Random
 using StaticArrays
-using CellListMap
+using CellListMap # https://m3g.github.io/CellListMap.jl/stable/
 
 # singele boid data structure
 # SVector is stack-allocated (Value Type) --> avoids heap allocations and GC pressure
@@ -10,6 +10,7 @@ struct Boid
     pos::SVector{2, Float64}
     vel::SVector{2, Float64}
 end
+# could be struct flock with structarray of positions and velocities
 
 # accumulator for flocking rule contributions
 # stack-allocated (no GC overhead), contiguous memory layout
@@ -34,6 +35,7 @@ function +(a::Accumulator, b::Accumulator)
     )
 end
 
+# use zero function here (zero of tdefined type) zero overload
 const ZERO_ACC = Accumulator(SVector(0.,0.), SVector(0.,0.), SVector(0.,0.), 0, 0)
 
 # simulation container
@@ -44,7 +46,7 @@ mutable struct Simulation{T, B, C}
     box::B
     cell_list::C
     accumulators::Vector{Accumulator} # already a concrete type
-    vel_norms::Vector{Float64} # buffer to pre-calculate norms
+    vel_norms::Vector{Float64} # buffer to pre-calculate norms # can be hidden in flock
 end
 
 # randomize boid positions and velocities
@@ -55,24 +57,25 @@ function randomize_data!(flock, cfg::SimConfig)
         flock.vel[i] = SVector(cos(a), sin(a)) * cfg.speed
     end
 end
+# could be defined on flock, no need for two functions then
 
 function Simulation(cfg::SimConfig)
     # initilize boids as StructArray for better memory layout (AoS -> SoA)
     # undef for performance; no need to initialize twice
     flock = StructArray{Boid}(undef, cfg.n_boids)
     randomize_data!(flock, cfg)
-    
+
     # spatial partitioning box for CellListMap, auto-wrapping edges
     box = Box([cfg.width, cfg.height], cfg.perception)
-    
+
     # spatial partitioning cell list for CellListMap, accelerates neighbor searches
     cl = CellList(flock.pos, box)
-    
+
     # standard vector of zeroed accumulators, heap-allocated
-    acc = fill(ZERO_ACC, cfg.n_boids)
+    acc = fill(ZERO_ACC, cfg.n_boids) # could also live in flock
 
     # allocate norm buffer
-    norms = zeros(Float64, cfg.n_boids)
+    norms = zeros(Float64, cfg.n_boids) # could also live in flock
 
     return Simulation(cfg, flock, box, cl, acc, norms)
 end
@@ -94,32 +97,32 @@ end
     if norm_v > max_val
         return v * (max_val / (norm_v + eps))
     end
-    return v
+    return v # return should be only in one place only, return unchanged velocity if nothing happened, otherwise return new velocity
 end
 
 # === KERNEL (PAIRWISE INTERACTION) ===
 
 function interact!(pos_i, pos_j, i, j, d2, out, flock_vel, flock_norms, sep_sq, fov_thresh, eps)
     d = sqrt(d2)
-    
+
     # access pre-calculated norms (memory read is faster then sqrt instruction)
     vel_norm_i = flock_norms[i]
     vel_norm_j = flock_norms[j]
-    
+
     # vector from i to j
     # pos_j is already relative, wrapped coordinate calculated by CellListMap
     offset_ij = pos_j - pos_i
-    
+
     # --- check i -> j ---
     if vel_norm_i > eps
         cos_theta = dot(flock_vel[i], offset_ij) / (vel_norm_i * d + eps)
         if cos_theta >= fov_thresh # j is within i's FOV
             out[i] = out[i] + Accumulator(
-                flock_vel[j],          
+                flock_vel[j],
                 pos_i + offset_ij, # virtual position for cohesion center
-                (d2 < sep_sq) ? (-offset_ij / (d2 + eps)) : SVector(0.,0.), 
-                1,              
-                (d2 < sep_sq) ? 1 : 0 
+                (d2 < sep_sq) ? (-offset_ij / (d2 + eps)) : SVector(0.,0.),
+                1,
+                (d2 < sep_sq) ? 1 : 0 # pull out (d2 < sep_sq)
             )
         end
     end
@@ -136,9 +139,10 @@ function interact!(pos_i, pos_j, i, j, d2, out, flock_vel, flock_norms, sep_sq, 
                 1,
                 (d2 < sep_sq) ? 1 : 0
             )
+            # needs to be cleaned up, avergaes can be taken during custom reduction
         end
     end
-    
+
     return out
 end
 
@@ -147,72 +151,77 @@ end
 function step!(sim::Simulation)
     cfg = sim.config
     flock = sim.flock
-    
+
     # update spatial partitioning
     sim.cell_list = UpdateCellList!(sim.flock.pos, sim.box, sim.cell_list)
-    
+    # should be switched for updating or not updating pair list instead
+
     # reset accumulators
-    fill!(sim.accumulators, ZERO_ACC)
+    fill!(sim.accumulators, ZERO_ACC) # should be the call to zero function instead
 
     # pre-calculate velocity norms
-    @inbounds for i in 1:length(flock)
-        sim.vel_norms[i] = norm(flock.vel[i])
+    @inbounds for i in 1:length(flock) # replace with eachindex
+        sim.vel_norms[i] = norm(flock.vel[i]) # name vel norms and vel on the beginning to avoid overuse
     end
-    
+
     sep_sq = cfg.separation_dist^2
-    fov = cos_half_fov(cfg)
+    fov = cos_half_fov(cfg) # change the cos half fov
     eps = cfg.eps
-    
+
     # run pairwise interactions in parallel using CellListMap
     map_pairwise!(
         (pos_i, pos_j, i, j, d2, out) -> interact!(
             pos_i, pos_j, i, j, d2, out, flock.vel, sim.vel_norms, sep_sq, fov, eps),
-        sim.accumulators,
+        sim.accumulators, # we need to define thread-local accumulators
         sim.box,
         sim.cell_list,
         parallel=true
     )
-    
+
     # apply forces and integrate
-    @inbounds for i in 1:length(flock)
+    @inbounds for i in 1:length(flock) # replace with eachindex
         acc_data = sim.accumulators[i]
         pos_i = flock.pos[i]
         vel_i = flock.vel[i]
-        
-        steer_coh = SVector(0.0, 0.0)
+
+        steer_coh = SVector(0.0, 0.0) # should again be defined as zeros
         steer_align = SVector(0.0, 0.0)
         steer_sep = SVector(0.0, 0.0)
-        
+
         c_ac = acc_data.count_ac
         c_s = acc_data.count_s
-        
+
         if c_ac > 0
             avg_pos = acc_data.coh_pos / c_ac
-            desired = avg_pos - pos_i
-            desired = limit_magnitude(desired * cfg.speed, cfg.speed, cfg.eps)
+            desired = avg_pos - pos_i # desired could be accumulated right way
+            desired = limit_magnitude(desired * cfg.speed, cfg.speed, cfg.eps) # cfg. stuff could be named in the beginning to avoid having it everywhere
             steer_coh = (desired - vel_i) * cfg.w_coh
-            
+
             avg_vel = acc_data.align_vel / c_ac
             desired = limit_magnitude(avg_vel, cfg.speed, cfg.eps)
             steer_align = (desired - vel_i) * cfg.w_align
         end
-        
+
         if c_s > 0
             avg_sep = acc_data.sep_vec / c_s
             desired = limit_magnitude(avg_sep, cfg.speed, cfg.eps)
             steer_sep = (desired - vel_i) * cfg.w_sep
         end
-        
+
         total_steer = steer_sep + steer_align + steer_coh
         acc = limit_magnitude(total_steer, cfg.max_force, cfg.eps)
-        
+
         # semi-implicit Euler integration
         new_vel = vel_i + (acc * cfg.dt)
         new_vel = limit_magnitude(new_vel, cfg.speed, cfg.eps)
-        
+
         flock.vel[i] = new_vel
-        
+
         new_pos = pos_i + (new_vel * cfg.dt)
-        flock.pos[i] = SVector(mod(new_pos[1], cfg.width), mod(new_pos[2], cfg.height))
+        flock.pos[i] = SVector(mod(new_pos[1], cfg.width), mod(new_pos[2], cfg.height)) # wrap could be defined by an inline function
     end
 end
+
+# overall try to have things in flock, not simulation
+# optimize temporary data
+# clean reduction of accumulators

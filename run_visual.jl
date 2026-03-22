@@ -1,6 +1,7 @@
 using Boids
 using GLMakie
 
+# should be a spearate function for returning plot defined in the module
 function run_app(; n_boids::Int)
     # get default config to read the perception radius
     defaults = SimConfig()
@@ -18,10 +19,10 @@ function run_app(; n_boids::Int)
         width = side_len,
         height = side_len
     )
-    sim = Simulation(cfg)
+    sim = Simulation(cfg) # config and sim initialization must be cleaned
 
     # wrap simulation arrays in observables so Makie knows when to redraw
-    obs_points = Observable(sim.flock.pos)
+    obs_points = Observable(sim.flock.pos) # obs should not be in name of variable
     obs_vels = Observable(sim.flock.vel)
     
     # @lift --> whenever vels change, rotations for markers update automatically
@@ -31,7 +32,8 @@ function run_app(; n_boids::Int)
 
     # create scene
     fig = Figure(resolution = (1200, 800), backgroundcolor = :black)
-    ax = Axis(fig[1, 1], 
+    ax = Axis(
+        fig[1, 1], 
         backgroundcolor = :black, 
         aspect = DataAspect(),
         limits = (0, cfg.width, 0, cfg.height)
@@ -46,7 +48,7 @@ function run_app(; n_boids::Int)
     scatter!(ax, obs_points, 
         rotation = obs_rotations,
         marker = '➤', 
-        markersize = marker_size,
+        markersize = marker_size, # look into markespacesize scaling or something liek that - markerspace data
         color = :cyan
     )
     
@@ -75,6 +77,7 @@ function run_app(; n_boids::Int)
 
     # render loop, async --> window stays responsive
     @async while isopen(fig.scene)
+        # want to change the accumulation based on tick
         t_now = time()
         delta_time = t_now - t_prev
         t_prev = t_now
@@ -98,8 +101,8 @@ function run_app(; n_boids::Int)
             notify(obs_vels)
         end
 
-        sleep(1/60) # cap to ~60 FPS
+        sleep(1/60) # cap to ~60 FPS (remove)
     end
 end
 
-run_app(n_boids=10000)
+run_app(n_boids=1000)

@@ -30,4 +30,4 @@ function run_benchmark(n_boids::Int)
     @btime step!($sim)
 end
 
-run_benchmark(10000)
+run_benchmark(20000)
