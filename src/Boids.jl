@@ -1,11 +1,10 @@
 module Boids
 
 using StaticArrays
-using StructArrays
 using LinearAlgebra
 using Random
 
-export SimConfig, Simulation, step!, randomize!
+export SimConfig, FlockConfig, Simulation, step!, randomize!, scaled_config
 
 include("Config.jl")
 include("Simulation.jl")

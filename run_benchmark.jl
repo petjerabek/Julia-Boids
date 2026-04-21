@@ -3,29 +3,14 @@ using BenchmarkTools
 
 function run_benchmark(n_boids::Int)
     println("Initializing Simulation with $n_boids boids...")
-    
-    # get default config to read the perception radius
-    defaults = SimConfig()
-    TARGET_NEIGHBORS = 8.0 # desired average neighbors per boid
-    
-    # scale world size to preserve constant density and O(N) complexity
-    # tagret area = (total boids * vision area) / target neighbors
-    vision_area = π * (defaults.perception^2)
-    target_area = (n_boids * vision_area) / TARGET_NEIGHBORS
-    side_len = sqrt(target_area)
-    
-    # create simulation with scaled world size
-    cfg = SimConfig(
-        n_boids = n_boids,
-        width = side_len,
-        height = side_len
-    )
-    sim = Simulation(cfg)
-    
-    println("World Size: $(round(Int, side_len))x$(round(Int, side_len))")
+
+    sim_cfg, flock_cfg = scaled_config(n_boids)
+    sim = Simulation(sim_cfg, flock_cfg)
+
+    println("World Size: $(round(Int, sim_cfg.width))x$(round(Int, sim_cfg.height))")
     println("Running warmup...")
-    step!(sim) 
-    
+    step!(sim)
+
     println("Benchmarking step!...")
     @btime step!($sim)
 end
