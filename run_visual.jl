@@ -4,8 +4,6 @@ using GLMakie
 # build the figure and observables. caller drives updates by mutating sim
 # and calling notify(pos) / notify(rotations).
 function build_plot(sim::Simulation)
-    sim_cfg = sim.sim_cfg
-    flock_cfg = sim.flock_cfg
     pos = Observable(sim.flock.pos)
 
     rotations_buf = [atan(v[2], v[1]) for v in sim.flock.vel]
@@ -16,7 +14,7 @@ function build_plot(sim::Simulation)
         fig[1, 1],
         backgroundcolor = :black,
         aspect = DataAspect(),
-        limits = (0, sim_cfg.width, 0, sim_cfg.height),
+        limits = (0, sim.width, 0, sim.height),
     )
     hidedecorations!(ax)
 
@@ -24,7 +22,7 @@ function build_plot(sim::Simulation)
     scatter!(ax, pos,
         rotation = rotations,
         marker = '➤',
-        markersize = flock_cfg.separation_dist * 0.7,
+        markersize = sim.flock.cfg.separation_dist * 0.7,
         markerspace = :data,
         color = :cyan,
     )
@@ -35,8 +33,7 @@ function build_plot(sim::Simulation)
 end
 
 function run_app(; n_boids::Int)
-    sim_cfg, flock_cfg = scaled_config(n_boids)
-    sim = Simulation(sim_cfg, flock_cfg)
+    sim = scaled_config(n_boids)
 
     fig, pos, rotations_buf, rotations = build_plot(sim)
 
@@ -69,9 +66,9 @@ function run_app(; n_boids::Int)
         # consume accumulated time in fixed steps so physics is deterministic
         # regardless of frame rate
         accumulator[] += dt_frame
-        while accumulator[] >= sim_cfg.dt
+        while accumulator[] >= sim.dt
             step!(sim)
-            accumulator[] -= sim_cfg.dt
+            accumulator[] -= sim.dt
         end
 
         vel = sim.flock.vel

@@ -28,9 +28,10 @@ end
 
 Base.zero(::Type{Accumulator}) = Accumulator(SVector(0.,0.), SVector(0.,0.), SVector(0.,0.), 0, 0)
 
-# flock: agent state (positions, velocities) plus per-boid scratch buffers
+# flock: behavioral config plus agent state (positions, velocities) and per-boid scratch buffers
 # SoA layout via parallel vectors of SVectors (stack-allocated, GC-friendly)
 struct Flock
+    cfg::FlockConfig
     pos::Vector{SVector{2, Float64}}
     vel::Vector{SVector{2, Float64}}
     vel_norms::Vector{Float64}         # cached |vel| to avoid recomputing sqrt
@@ -40,33 +41,35 @@ end
 Base.length(f::Flock) = length(f.pos)
 Base.eachindex(f::Flock) = eachindex(f.pos)
 
-function Flock(sim_cfg::SimConfig, flock_cfg::FlockConfig)
-    n = flock_cfg.n_boids
+function Flock(width::Float64, height::Float64, cfg::FlockConfig)
+    n = cfg.n_boids
     f = Flock(
+        cfg,
         Vector{SVector{2, Float64}}(undef, n),
         Vector{SVector{2, Float64}}(undef, n),
         Vector{Float64}(undef, n),
         fill(zero(Accumulator), n)
     )
-    randomize!(f, sim_cfg, flock_cfg)
+    randomize!(f, width, height)
     return f
 end
 
-# randomize boid positions and velocities
-function randomize!(flock::Flock, sim_cfg::SimConfig, flock_cfg::FlockConfig)
+function randomize!(flock::Flock, width::Float64, height::Float64)
+    speed = flock.cfg.speed
     for i in eachindex(flock)
-        flock.pos[i] = SVector(rand() * sim_cfg.width, rand() * sim_cfg.height)
+        flock.pos[i] = SVector(rand() * width, rand() * height)
         a = rand() * 2π
-        flock.vel[i] = SVector(cos(a), sin(a)) * flock_cfg.speed
-        flock.vel_norms[i] = flock_cfg.speed
+        flock.vel[i] = SVector(cos(a), sin(a)) * speed
+        flock.vel_norms[i] = speed
     end
 end
 
 # simulation container
 # parametric structure allows storing complex types without sacrificing type stability
 mutable struct Simulation{B, C, A}
-    sim_cfg::SimConfig
-    flock_cfg::FlockConfig
+    width::Float64
+    height::Float64
+    dt::Float64
     flock::Flock
     box::B
     cell_list::C
@@ -75,11 +78,11 @@ mutable struct Simulation{B, C, A}
     accumulators_threaded::Vector{Vector{Accumulator}}
 end
 
-function Simulation(sim_cfg::SimConfig, flock_cfg::FlockConfig)
-    flock = Flock(sim_cfg, flock_cfg)
+function Simulation(width::Float64, height::Float64, flock_cfg::FlockConfig; dt::Float64 = 0.02)
+    flock = Flock(width, height, flock_cfg)
 
     # spatial partitioning box for CellListMap, auto-wrapping edges
-    box = Box([sim_cfg.width, sim_cfg.height], flock_cfg.perception)
+    box = Box([width, height], flock_cfg.perception)
 
     # spatial partitioning cell list for CellListMap, accelerates neighbor searches
     cl = CellList(flock.pos, box)
@@ -91,12 +94,12 @@ function Simulation(sim_cfg::SimConfig, flock_cfg::FlockConfig)
     nbatches = cl.nbatches.map_computation
     accumulators_threaded = [fill(zero(Accumulator), flock_cfg.n_boids) for _ in 1:nbatches]
 
-    return Simulation(sim_cfg, flock_cfg, flock, box, cl, aux, accumulators_threaded)
+    return Simulation(width, height, dt, flock, box, cl, aux, accumulators_threaded)
 end
 
 # API endpoint to randomize the simulation
 function randomize!(sim::Simulation)
-    randomize!(sim.flock, sim.sim_cfg, sim.flock_cfg)
+    randomize!(sim.flock, sim.width, sim.height)
     sim.cell_list = UpdateCellList!(sim.flock.pos, sim.box, sim.cell_list, sim.aux)
 end
 
@@ -172,8 +175,7 @@ end
 # === PHYSICS LOOP ===
 
 function step!(sim::Simulation)
-    sim_cfg = sim.sim_cfg
-    flock_cfg = sim.flock_cfg
+    flock_cfg = sim.flock.cfg
     flock = sim.flock
     pos = flock.pos
     vel = flock.vel
@@ -181,17 +183,17 @@ function step!(sim::Simulation)
     accumulators = flock.accumulators
     accumulators_threaded = sim.accumulators_threaded
 
-    dt = sim_cfg.dt
+    dt = sim.dt
+    width = sim.width
+    height = sim.height
     speed = flock_cfg.speed
     eps = flock_cfg.eps
     w_coh = flock_cfg.w_coh
     w_align = flock_cfg.w_align
     w_sep = flock_cfg.w_sep
     max_force = flock_cfg.max_force
-    width = sim_cfg.width
-    height = sim_cfg.height
     sep_sq = flock_cfg.separation_dist^2
-    fov_thresh = cos_half_fov(flock_cfg)
+    fov_thresh = cos(deg2rad(flock_cfg.fov_deg / 2.0))
 
     # update spatial partitioning in place using preallocated AuxThreaded
     sim.cell_list = UpdateCellList!(pos, sim.box, sim.cell_list, sim.aux)
